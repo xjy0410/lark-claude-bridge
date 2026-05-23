@@ -21,7 +21,7 @@ import { initAccess, isSenderAllowed, handleUnauthorized, resolvePairingCode, ad
 import { initSessions, getSessionId, setSessionId, listCliSessions, getRecentHistory, getSessionContextSize, getLastHistoryTime, getHistorySince, getAllSessions, isSessionBusy } from './sessions.js'
 import { startPatrol, stopPatrol } from './patrol.js'
 import { initHeartbeat, stopHeartbeat } from './heartbeat.js'
-import { sendText, sendCard, dissolveChat, setChatDescription } from './lark.js'
+import { sendText, sendCard, dissolveChat } from './lark.js'
 
 // Resolve config path from CLI arg or default
 const configPath = process.argv[2] || './config.yaml'
@@ -57,15 +57,7 @@ async function main(): Promise<void> {
 
   const tn = config.settings.terminalName
 
-  // 2.5 Set group descriptions with command help
-  for (const group of config.groups) {
-    if (!group.chatId) continue
-    if (group.isManager) {
-      setChatDescription(group.chatId, `Commands: sessions | use <N> | takeover <N> <name> | new <name> | help`).catch(() => {})
-    } else {
-      setChatDescription(group.chatId, `[${tn}] Commands: update | watch | fork | kill-cli | end | help`).catch(() => {})
-    }
-  }
+
 
   // 3. Admin command handler (messages starting with special prefixes)
   function handleAdminCommand(event: LarkEvent, group: GroupConfig): boolean {
@@ -74,30 +66,70 @@ async function main(): Promise<void> {
     // "sessions" quick command — only in manager group
     if (text === 'sessions' && group.isManager) {
       const cliSessions = listCliSessions()
-      const lines: string[] = [`**Active Sessions [${tn}]:**\n`]
-      if (cliSessions.length === 0) {
-        lines.push('*(none active)*\n')
-      } else {
-        for (let i = 0; i < cliSessions.length; i++) {
-          const s = cliSessions[i]
+      const feishuSessions = getAllSessions()
+      const feishuSessionIds = new Set(Object.values(feishuSessions).map(s => s.sessionId))
+      const cliSessionIds = new Set(cliSessions.map(s => s.sessionId))
+
+      const lines: string[] = [`**Sessions [${tn}]:**\n`]
+
+      // CLI-only sessions
+      const cliOnly = cliSessions.filter(s => !feishuSessionIds.has(s.sessionId))
+      // Shared sessions (in both CLI and Feishu)
+      const shared = cliSessions.filter(s => feishuSessionIds.has(s.sessionId))
+      // Feishu-only sessions
+      const feishuOnly = Object.entries(feishuSessions).filter(([_, s]) => !cliSessionIds.has(s.sessionId))
+
+      let idx = 1
+      if (shared.length > 0) {
+        lines.push('**Shared (CLI + Feishu):**')
+        for (const s of shared) {
           const name = s.name ? ` "${s.name}"` : ''
           const status = s.status ? `[${s.status}]` : ''
           const id = s.sessionId.slice(0, 8)
           const size = getSessionContextSize(s.sessionId)
           const lastTs = getLastHistoryTime(s.sessionId)
           const timeAgo = lastTs ? formatTimeAgo(lastTs) : '?'
-          lines.push(`**${i + 1}.** ${status} \`${id}\`${name}  (${size}, ${timeAgo})`)
-          lines.push(`  cwd: ${s.cwd}`)
-          const history = getRecentHistory(s.sessionId, 3)
-          if (history.length > 0) {
-            for (const h of history) {
-              const display = h.display.length > 50 ? h.display.slice(0, 50) + '...' : h.display
-              lines.push(`  > ${display}`)
-            }
-          }
-          lines.push('')
+          const chatId = Object.entries(feishuSessions).find(([_, v]) => v.sessionId === s.sessionId)?.[0]
+          const groupName = chatId ? routeChat(chatId)?.name ?? '' : ''
+          lines.push(`**${idx}.** ${status} \`${id}\`${name}  (${size}, ${timeAgo})`)
+          lines.push(`  cwd: ${s.cwd}${groupName ? `  group: ${groupName}` : ''}`)
+          idx++
         }
+        lines.push('')
       }
+
+      if (cliOnly.length > 0) {
+        lines.push('**CLI only:**')
+        for (const s of cliOnly) {
+          const name = s.name ? ` "${s.name}"` : ''
+          const status = s.status ? `[${s.status}]` : ''
+          const id = s.sessionId.slice(0, 8)
+          const size = getSessionContextSize(s.sessionId)
+          const lastTs = getLastHistoryTime(s.sessionId)
+          const timeAgo = lastTs ? formatTimeAgo(lastTs) : '?'
+          lines.push(`**${idx}.** ${status} \`${id}\`${name}  (${size}, ${timeAgo})`)
+          lines.push(`  cwd: ${s.cwd}`)
+          idx++
+        }
+        lines.push('')
+      }
+
+      if (feishuOnly.length > 0) {
+        lines.push('**Feishu only:**')
+        for (const [chatId, s] of feishuOnly) {
+          const id = s.sessionId.slice(0, 8)
+          const size = getSessionContextSize(s.sessionId)
+          const groupName = routeChat(chatId)?.name ?? chatId.slice(0, 12)
+          const timeAgo = formatTimeAgo(new Date(s.lastActive).getTime())
+          lines.push(`**${idx}.** \`${id}\`  (${size}, ${timeAgo})`)
+          lines.push(`  group: ${groupName}`)
+          idx++
+        }
+        lines.push('')
+      }
+
+      if (idx === 1) lines.push('*(none active)*\n')
+
       lines.push('---')
       lines.push('`use <N>` 接管  |  `new` 新建  |  `help` 命令列表')
       const card = {
