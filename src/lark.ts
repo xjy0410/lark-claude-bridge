@@ -212,6 +212,10 @@ export async function fetchDoc(docUrl: string): Promise<ExecResult> {
   return exec(['docs', '+fetch', '--doc', docUrl, '--as', 'user'])
 }
 
+export async function updateDoc(docUrl: string, markdown: string): Promise<ExecResult> {
+  return exec(['docs', '+update', '--doc', docUrl, '--markdown', markdown, '--mode', 'overwrite', '--as', 'user'])
+}
+
 export async function searchDocs(query: string, options: { pageLimit?: number } = {}): Promise<ExecResult> {
   const args = ['docs', '+search', '--query', query, '--as', 'user']
   if (options.pageLimit) args.push('--page-limit', String(options.pageLimit))

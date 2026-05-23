@@ -26,6 +26,8 @@ export interface Settings {
   maxConcurrent: number
   defaultModel: string
   python: string
+  terminalName: string
+  heartbeatDoc: string
 }
 
 export interface AccessConfig {
@@ -130,6 +132,8 @@ export function loadConfig(configPath: string): AppConfig {
     maxConcurrent: doc.settings?.max_concurrent ?? 10,
     defaultModel: doc.settings?.default_model ?? 'claude-sonnet-4-6',
     python: doc.settings?.python ?? 'python3',
+    terminalName: doc.settings?.terminal_name ?? 'default',
+    heartbeatDoc: doc.settings?.heartbeat_doc ?? '',
   }
 
   const access: AccessConfig = {

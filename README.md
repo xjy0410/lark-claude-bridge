@@ -12,6 +12,7 @@
 - **CLI 共存** — 检测 CLI 占用，提供 watch/fork/kill 选项
 - **定时巡检** — 支持 cron 定时任务（日报、监控等）
 - **访问控制** — 支持 open/allowlist 模式
+- **多终端支持** — 多台机器共用 Manager 群，心跳上报在线状态
 - **macOS/Linux 自启动** — launchd / systemd 配置
 
 ## 架构
@@ -87,7 +88,8 @@ settings:
   max_concurrent: 10
   default_model: claude-opus-4-6
   python: python3
-  agents_dir: ~/.lark-channel/agents
+  terminal_name: MacBook
+  # heartbeat_doc: https://xxx.feishu.cn/docx/xxx
 
 access:
   policy: open
@@ -187,7 +189,44 @@ schedule:
 └─────────────────────────────────┘
 ```
 
-工作时自动置顶状态消息：`thinking...` → `running: Bash npm test...` → 完成后取消。
+工作时自动置顶状态消息：`[MacBook] thinking...` → `[MacBook] running: Bash npm test...` → 完成后取消。
+
+## 多终端支持
+
+多台机器（MacBook、Linux 服务器等）可以共用一个 Manager 群，每台部署独立的飞书应用 + lark-channel 实例。
+
+### 工作原理
+
+- 每台机器配置不同的 `terminal_name`
+- 飞书群聊中 bot 默认只收到 @自己的消息 → 天然隔离
+- 每台机器独立的 `~/.lark-channel/` → session 存储天然隔离
+- 通过共享飞书文档实现心跳上报
+
+### 配置
+
+```yaml
+settings:
+  terminal_name: MacBook                              # 终端标识
+  heartbeat_doc: https://xxx.feishu.cn/docx/xxx       # 心跳文档 URL
+```
+
+### 心跳机制
+
+1. 每个终端每 5 分钟读取心跳文档 → 更新自己的状态 → 写回
+2. 同时更新 Manager 群的置顶消息，显示所有终端状态：
+   ```
+   🟢 MacBook (3 sessions, 2m ago)
+   🟢 Linux-Server (1 session, 4m ago)
+   🔴 Office-PC (offline, 6h ago)
+   ```
+3. 超过 10 分钟未更新的终端自动标记为 offline
+
+### 部署第二台机器
+
+1. 在飞书开放平台创建新的自建应用（每台机器一个 bot）
+2. 将新 bot 加入同一个 Manager 群
+3. 配置不同的 `terminal_name`，相同的 `heartbeat_doc`
+4. 在 Manager 群中 @对应 bot 即可操作对应终端
 
 ## 系统自启动
 
@@ -293,6 +332,7 @@ systemctl --user enable --now lark-channel
 │   ├── queue.ts        # 并发队列
 │   ├── access.ts       # 访问控制
 │   ├── patrol.ts       # 定时巡检
+│   ├── heartbeat.ts    # 多终端心跳上报
 │   └── lark.ts         # lark-cli 命令封装
 ├── agent_worker.py     # Python Agent SDK worker
 ├── config.example.yaml # 配置模板

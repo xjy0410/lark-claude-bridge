@@ -10,6 +10,11 @@ settings:
   default_model: claude-sonnet-4-6
   # Python executable for Agent SDK worker
   python: python3
+  # Terminal name — identifies this machine in multi-terminal setups
+  terminal_name: MacBook
+  # Heartbeat doc URL — shared Feishu doc for multi-terminal status coordination
+  # All terminals write their status here; the manager group pin shows a summary
+  # heartbeat_doc: https://xxx.feishu.cn/docx/xxx
 
 access:
   # "open" accepts messages from anyone in configured groups

@@ -20,6 +20,7 @@ import { handleAgentResponse } from './reply.js'
 import { initAccess, isSenderAllowed, handleUnauthorized, resolvePairingCode, addSender, setAccessPolicy, getAllowed } from './access.js'
 import { initSessions, getSessionId, setSessionId, listCliSessions, getRecentHistory, getSessionContextSize, getLastHistoryTime, getHistorySince, getAllSessions, isSessionBusy } from './sessions.js'
 import { startPatrol, stopPatrol } from './patrol.js'
+import { initHeartbeat, stopHeartbeat } from './heartbeat.js'
 import { sendText, sendCard, dissolveChat, setChatDescription } from './lark.js'
 
 // Resolve config path from CLI arg or default
@@ -54,13 +55,15 @@ async function main(): Promise<void> {
   initSessions(resolve(stateDir, 'sessions.json'), parseTtl(config.settings.sessionTtl))
   setPythonPath(config.settings.python)
 
+  const tn = config.settings.terminalName
+
   // 2.5 Set group descriptions with command help
   for (const group of config.groups) {
     if (!group.chatId) continue
     if (group.isManager) {
-      setChatDescription(group.chatId, 'Commands: sessions | use <N> | takeover <N> <name> | new <name> | help').catch(() => {})
+      setChatDescription(group.chatId, `[${tn}] Commands: sessions | use <N> | takeover <N> <name> | new <name> | help`).catch(() => {})
     } else {
-      setChatDescription(group.chatId, 'Commands: update | watch | fork | kill-cli | end | help').catch(() => {})
+      setChatDescription(group.chatId, `[${tn}] Commands: update | watch | fork | kill-cli | end | help`).catch(() => {})
     }
   }
 
@@ -71,7 +74,7 @@ async function main(): Promise<void> {
     // "sessions" quick command — only in manager group
     if (text === 'sessions' && group.isManager) {
       const cliSessions = listCliSessions()
-      const lines: string[] = ['**Active Sessions:**\n']
+      const lines: string[] = [`**Active Sessions [${tn}]:**\n`]
       if (cliSessions.length === 0) {
         lines.push('*(none active)*\n')
       } else {
@@ -178,7 +181,7 @@ async function main(): Promise<void> {
             permissionMode: group.permissionMode,
             model: config.settings.defaultModel,
           })
-          const result = await handleAgentResponse(event.message_id, event.chat_id, chunks)
+          const result = await handleAgentResponse(event.message_id, event.chat_id, chunks, tn)
           if (result.sessionId) setSessionId(event.chat_id, result.sessionId)
         } catch (err) {
           log(`Error in takeover: ${err}`)
@@ -219,7 +222,7 @@ async function main(): Promise<void> {
             permissionMode: group.permissionMode,
             model: config.settings.defaultModel,
           })
-          const result = await handleAgentResponse(event.message_id, event.chat_id, chunks)
+          const result = await handleAgentResponse(event.message_id, event.chat_id, chunks, tn)
           if (result.sessionId) setSessionId(event.chat_id, result.sessionId)
         } catch (err) {
           log(`Error in new workspace: ${err}`)
@@ -495,6 +498,7 @@ async function main(): Promise<void> {
             event.message_id,
             event.chat_id,
             chunks,
+            tn,
           )
 
           if (result.sessionId) {
@@ -513,9 +517,21 @@ async function main(): Promise<void> {
   // 5. Start scheduled patrols
   startPatrol(config.groups, config.settings)
 
+  // 5.5 Start heartbeat
+  const managerGroup = config.groups.find(g => g.isManager)
+  if (managerGroup && config.settings.heartbeatDoc) {
+    initHeartbeat({
+      terminalName: tn,
+      heartbeatDoc: config.settings.heartbeatDoc,
+      managerChatId: managerGroup.chatId,
+      stateDir: stateDir,
+    })
+  }
+
   // 6. Graceful shutdown
   const shutdown = () => {
     log('Shutting down...')
+    stopHeartbeat()
     stopPatrol()
     bridge.kill()
     process.exit(0)

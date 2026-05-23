@@ -287,7 +287,7 @@ interface Step {
   patcher: PatchScheduler | null
 }
 
-function buildStepCard(step: Step, opts: { isFinal: boolean; startMs: number; totalTools: number; buttons: ActionButton[] }): object {
+function buildStepCard(step: Step, opts: { isFinal: boolean; startMs: number; totalTools: number; buttons: ActionButton[]; terminalName?: string }): object {
   const elements: object[] = []
 
   // Text content on top
@@ -326,7 +326,7 @@ function buildStepCard(step: Step, opts: { isFinal: boolean; startMs: number; to
     const s = Math.round((Date.now() - opts.startMs) / 1000)
     const elapsed = s > 0 ? `${s}s` : ''
     const toolNote = opts.totalTools > 0 ? `${opts.totalTools} tool${opts.totalTools !== 1 ? 's' : ''}` : ''
-    const footer = [toolNote, elapsed].filter(Boolean).join(' · ')
+    const footer = [toolNote, elapsed, opts.terminalName].filter(Boolean).join(' · ')
     if (footer) {
       elements.push({ tag: 'note', elements: [{ tag: 'plain_text', content: footer }] })
     }
@@ -339,10 +339,12 @@ export async function handleAgentResponse(
   messageId: string,
   chatId: string,
   agentChunks: AsyncGenerator<AgentChunk>,
+  terminalName?: string,
 ): Promise<ReplyResult> {
   const startMs = Date.now()
   addReaction(messageId, EMOJI.received).catch(() => {})
-  updateStatus(chatId, 'thinking...').catch(() => {})
+  const statusPrefix = terminalName ? `[${terminalName}] ` : ''
+  updateStatus(chatId, `${statusPrefix}thinking...`).catch(() => {})
 
   let sessionId: string | undefined
   let hasError = false
@@ -366,7 +368,7 @@ export async function handleAgentResponse(
     if (!current.text.trim() && current.tools.length === 0) return
     await ensureStepCard()
     if (current.patcher) {
-      const card = buildStepCard(current, { isFinal: false, startMs, totalTools, buttons: [] })
+      const card = buildStepCard(current, { isFinal: false, startMs, totalTools, buttons: [], terminalName })
       await current.patcher.flush(card)
     }
     flushedSteps.push(current)
@@ -394,7 +396,7 @@ export async function handleAgentResponse(
           lastToolSpec = spec
           current.tools.push({ spec })
           await ensureStepCard()
-          updateStatus(chatId, `running: ${spec.header}${spec.body ? ' ' + spec.body.slice(0, 30) : ''}...`).catch(() => {})
+          updateStatus(chatId, `${statusPrefix}running: ${spec.header}${spec.body ? ' ' + spec.body.slice(0, 30) : ''}...`).catch(() => {})
           // Show working state on current card
           const workingText = current.text || `*Working... (${current.tools.length} tool${current.tools.length !== 1 ? 's' : ''})*`
           current.patcher?.push(textCard(workingText))
@@ -448,7 +450,7 @@ export async function handleAgentResponse(
   if (!hasError) {
     await ensureStepCard()
     const buttons = extractActionButtons(current.text)
-    const card = buildStepCard(current, { isFinal: true, startMs, totalTools, buttons })
+    const card = buildStepCard(current, { isFinal: true, startMs, totalTools, buttons, terminalName })
     if (current.patcher) {
       await current.patcher.flush(card)
     }
