@@ -61,7 +61,7 @@ async function main(): Promise<void> {
   for (const group of config.groups) {
     if (!group.chatId) continue
     if (group.isManager) {
-      setChatDescription(group.chatId, `[${tn}] Commands: sessions | use <N> | takeover <N> <name> | new <name> | help`).catch(() => {})
+      setChatDescription(group.chatId, `Commands: sessions | use <N> | takeover <N> <name> | new <name> | help`).catch(() => {})
     } else {
       setChatDescription(group.chatId, `[${tn}] Commands: update | watch | fork | kill-cli | end | help`).catch(() => {})
     }
@@ -151,7 +151,7 @@ async function main(): Promise<void> {
         return true
       }
       const s = cliSessions[idx]
-      const displayName = `${groupName} [MacBook]`
+      const displayName = `${groupName} [${tn}]`
       const slug = groupName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
 
       // Create group, add user, write config, restart — via agent
@@ -194,7 +194,7 @@ async function main(): Promise<void> {
     const newMatch = text.match(/^new\s+(.+)$/)
     if (newMatch && group.isManager) {
       const groupName = newMatch[1].trim()
-      const displayName = `${groupName} [MacBook]`
+      const displayName = `${groupName} [${tn}]`
       const slug = groupName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
 
       const instructions = [
@@ -237,8 +237,8 @@ async function main(): Promise<void> {
         '**Session Manager Commands:**\n',
         '`sessions` — list all active CLI sessions',
         '`use <N>` — view session N details',
-        '`takeover <N> <name>` — takeover session N, create group "<name> [MacBook]"',
-        '`new <name>` — create new workspace "<name> [MacBook]"',
+        `\`takeover <N> <name>\` — takeover session N, create group "<name> [${tn}]"`,
+        `\`new <name>\` — create new workspace "<name> [${tn}]"`,
         '`help` — show this message',
       ]
       const card = {

@@ -311,10 +311,11 @@ systemctl --user enable --now lark-channel
 3. 安装 Python SDK: pip3 install claude-agent-sdk
 4. 安装 lark-cli: npm install -g @anthropic-ai/lark-cli
 5. 配置 lark-cli（我会提供 App ID 和 Secret）
-6. 创建 ~/.lark-channel/agents/ 目录和配置文件
-7. 创建 config.yaml
-8. 配置系统自启动（macOS 用 launchd，Linux 用 systemd）
-9. 启动服务并验证
+6. 给这台终端起一个名字（如 MacBook、Linux-Server），写入 config.yaml 的 terminal_name 字段，新建工作群时会加上该后缀
+7. 创建 ~/.lark-channel/agents/ 目录和配置文件
+8. 创建 config.yaml（包含 terminal_name 和 heartbeat_doc）
+9. 配置系统自启动（macOS 用 launchd，Linux 用 systemd）
+10. 启动服务并验证
 
 每步完成后确认再继续。
 ```
