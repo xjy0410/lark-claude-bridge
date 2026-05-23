@@ -104,7 +104,13 @@ async function doHeartbeat(): Promise<void> {
   const docResult = await fetchDoc(heartbeatDocUrl)
   let statuses: TerminalStatus[] = []
   if (docResult.ok && docResult.stdout.trim()) {
-    statuses = parseDocContent(docResult.stdout)
+    try {
+      const json = JSON.parse(docResult.stdout)
+      const md = json.data?.markdown ?? ''
+      if (md.trim()) statuses = parseDocContent(md)
+    } catch {
+      statuses = parseDocContent(docResult.stdout)
+    }
   }
 
   // 2. Update own entry
@@ -128,7 +134,8 @@ async function doHeartbeat(): Promise<void> {
 
   // 4. Write back to doc
   const newContent = serializeStatuses(statuses)
-  await updateDoc(heartbeatDocUrl, newContent)
+  const updateResult = await updateDoc(heartbeatDocUrl, newContent)
+  if (!updateResult.ok) console.error(`[heartbeat] updateDoc failed: ${updateResult.stderr || updateResult.stdout}`)
 
   // 5. Update pinned message in manager group
   const card = buildStatusCard(statuses)

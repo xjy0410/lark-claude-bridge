@@ -209,11 +209,11 @@ export async function createDoc(
 }
 
 export async function fetchDoc(docUrl: string): Promise<ExecResult> {
-  return exec(['docs', '+fetch', '--doc', docUrl, '--as', 'user'])
+  return exec(['docs', '+fetch', '--doc', docUrl])
 }
 
 export async function updateDoc(docUrl: string, markdown: string): Promise<ExecResult> {
-  return exec(['docs', '+update', '--doc', docUrl, '--markdown', markdown, '--mode', 'overwrite', '--as', 'user'])
+  return exec(['docs', '+update', '--doc', docUrl, '--markdown', markdown, '--mode', 'overwrite'])
 }
 
 export async function searchDocs(query: string, options: { pageLimit?: number } = {}): Promise<ExecResult> {
