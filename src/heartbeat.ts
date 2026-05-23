@@ -112,7 +112,7 @@ async function doHeartbeat(): Promise<void> {
   }
 
   // 2. Update own entry
-  const sessionCount = listCliSessions().length
+  const sessionCount = listCliSessions().filter(s => s.status === 'busy').length
   const now = new Date().toISOString()
   const idx = statuses.findIndex(s => s.name === terminalName)
   const entry: TerminalStatus = { name: terminalName, status: 'online', lastSeen: now, sessions: sessionCount }
