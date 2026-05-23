@@ -87,15 +87,11 @@ function serializeStatuses(statuses: TerminalStatus[]): string {
 }
 
 function buildStatusCard(statuses: TerminalStatus[]): object {
-  const now = Date.now()
   const lines = statuses.map(s => {
-    const age = now - new Date(s.lastSeen).getTime()
-    const ago = age < 60000 ? 'just now'
-      : age < 3600000 ? `${Math.floor(age / 60000)}m ago`
-      : `${Math.floor(age / 3600000)}h ago`
+    const time = new Date(s.lastSeen).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
     const icon = s.status === 'online' ? '🟢' : '🔴'
     const sess = s.sessions > 0 ? `${s.sessions} session${s.sessions !== 1 ? 's' : ''}` : 'idle'
-    return `${icon} **${s.name}** (${sess}, ${ago})`
+    return `${icon} **${s.name}** (${sess}, ${time})`
   })
   return {
     config: { wide_screen_mode: true },
