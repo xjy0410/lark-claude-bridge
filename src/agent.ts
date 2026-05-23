@@ -13,6 +13,7 @@ export interface AgentRequest {
   cwd: string
   permissionMode: string
   model?: string
+  forkSession?: boolean
 }
 
 export interface AgentChunk {
@@ -40,6 +41,7 @@ export async function* queryAgent(req: AgentRequest): AsyncGenerator<AgentChunk>
     cwd: req.cwd,
     permissionMode: req.permissionMode,
     model: req.model,
+    forkSession: req.forkSession ?? false,
   })
 
   const proc = spawn([pythonPath, WORKER_PATH], {

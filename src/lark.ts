@@ -287,6 +287,46 @@ export async function setCardKitStreamingMode(
   ])
 }
 
+// -- Pin Messages --
+
+export async function pinMessage(messageId: string): Promise<ExecResult> {
+  return exec([
+    'api', 'POST',
+    '/open-apis/im/v1/pins',
+    '--data', JSON.stringify({ message_id: messageId }),
+    '--as', 'bot',
+  ])
+}
+
+export async function unpinMessage(messageId: string): Promise<ExecResult> {
+  return exec([
+    'api', 'DELETE',
+    `/open-apis/im/v1/pins/${messageId}`,
+    '--as', 'bot',
+  ])
+}
+
+// -- Chat Announcements (via description) --
+
+export async function setChatDescription(chatId: string, description: string): Promise<ExecResult> {
+  return exec([
+    'api', 'PUT',
+    `/open-apis/im/v1/chats/${chatId}`,
+    '--data', JSON.stringify({ description }),
+    '--as', 'bot',
+  ])
+}
+
+// -- Dissolve Chat --
+
+export async function dissolveChat(chatId: string): Promise<ExecResult> {
+  return exec([
+    'api', 'DELETE',
+    `/open-apis/im/v1/chats/${chatId}`,
+    '--as', 'bot',
+  ])
+}
+
 export async function updateCardKit(
   cardId: string,
   cardJson: object,

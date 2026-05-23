@@ -61,6 +61,7 @@ async def run() -> None:
         model=req.get("model"),
         disallowed_tools=["AskUserQuestion", "EnterPlanMode", "ExitPlanMode"],
         include_partial_messages=True,
+        fork_session=req.get("forkSession", False),
     )
 
     async with ClaudeSDKClient(options) as client:

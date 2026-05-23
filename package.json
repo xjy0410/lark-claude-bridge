@@ -1,7 +1,7 @@
 {
-  "name": "lark-channel",
-  "version": "0.1.0",
-  "description": "Feishu/Lark <-> Claude Code Agent collaboration bridge. Per-group isolated AI agents with streaming card responses, reaction status, and deep Feishu integration.",
+  "name": "lark-claude-bridge",
+  "version": "1.0.0",
+  "description": "Feishu/Lark <-> Claude Code Agent collaboration bridge with session management, streaming cards, and tool call folding.",
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
@@ -19,7 +19,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/shareAI-lab/lark-channel.git"
+    "url": "https://github.com/xjy0410/lark-claude-bridge.git"
   },
   "keywords": [
     "feishu",

@@ -12,7 +12,7 @@
 //   ## headings  → **bold**
 //   leading/trailing blank lines stripped before push
 
-import { addReaction, replyCard, patchMessage, sendCard } from './lark.js'
+import { addReaction, replyCard, patchMessage, sendCard, pinMessage, unpinMessage } from './lark.js'
 import type { AgentChunk } from './agent.js'
 
 type CardColor = 'blue' | 'green' | 'red' | 'purple' | 'indigo' | 'turquoise' | 'wathet' | 'orange'
@@ -128,24 +128,35 @@ function toolSpec(header: string, body: string, color: CardColor): ToolSpec {
   return { header, body, color }
 }
 
-function toolCardContent(spec: ToolSpec, resultMd?: string): object {
-  const elements: object[] = []
-  if (spec.body) {
-    elements.push({ tag: 'markdown', content: '```\n' + spec.body + '\n```' })
+
+interface CollapsedTool {
+  spec: ToolSpec
+  result?: string
+}
+
+function buildCollapsiblePanel(tool: CollapsedTool): object {
+  const bodyElements: object[] = []
+  if (tool.spec.body) {
+    bodyElements.push({ tag: 'markdown', content: '```\n' + tool.spec.body + '\n```' })
   }
-  if (resultMd) {
-    elements.push({ tag: 'hr' })
-    elements.push({ tag: 'markdown', content: resultMd })
+  if (tool.result) {
+    bodyElements.push({ tag: 'markdown', content: tool.result })
+  }
+  if (bodyElements.length === 0) {
+    bodyElements.push({ tag: 'markdown', content: '*completed*' })
   }
   return {
-    config: { wide_screen_mode: true },
+    tag: 'collapsible_panel',
+    expanded: false,
+    background_color: 'grey',
     header: {
-      title: { tag: 'plain_text', content: spec.header },
-      template: spec.color,
+      title: { tag: 'markdown', content: `**${tool.spec.header}**${tool.spec.body ? ' `' + tool.spec.body.slice(0, 40) + (tool.spec.body.length > 40 ? '...' : '') + '`' : ''}` },
+      vertical_align: 'center',
     },
-    elements,
+    body: { elements: bodyElements },
   }
 }
+
 
 function buildResultPreview(content: string, lineCount: number, spec: ToolSpec, isError: boolean): string {
   if (isError) {
@@ -186,21 +197,6 @@ function buildResultPreview(content: string, lineCount: number, spec: ToolSpec, 
   }
 }
 
-function doneCard(toolCount: number, startMs: number): object {
-  const s = Math.round((Date.now() - startMs) / 1000)
-  const elapsed = s > 0 ? ` · ${s}s` : ''
-  const note = toolCount > 0
-    ? `${toolCount} tool call${toolCount !== 1 ? 's' : ''}${elapsed}`
-    : `Completed${elapsed}`
-  return {
-    config: { wide_screen_mode: true },
-    header: {
-      title: { tag: 'plain_text', content: `Done${elapsed}` },
-      template: 'green' as CardColor,
-    },
-    elements: [{ tag: 'note', elements: [{ tag: 'plain_text', content: note }] }],
-  }
-}
 
 function errorCard(content: string): object {
   let display = content || 'Unknown error'
@@ -253,15 +249,91 @@ function extractActionButtons(text: string): ActionButton[] {
 // -- Active text block --
 // Manages the in-flight streaming text card.
 
-interface TextBlock {
-  text: string
-  patcher: PatchScheduler | null
-  cardPromise: Promise<string | null>
-}
-
-// -- Main handler --
 
 export interface ReplyResult { sessionId?: string }
+
+// Status pin management — one pinned message per chat showing current state
+const statusPins = new Map<string, string>() // chatId → pinned messageId
+
+async function updateStatus(chatId: string, status: string): Promise<void> {
+  const card = {
+    config: { wide_screen_mode: true },
+    elements: [{ tag: 'note', elements: [{ tag: 'plain_text', content: status }] }],
+  }
+  const existing = statusPins.get(chatId)
+  if (existing) {
+    patchMessage(existing, card).catch(() => {})
+  } else {
+    const id = await sendCard(chatId, card)
+    if (id) {
+      statusPins.set(chatId, id)
+      pinMessage(id).catch(() => {})
+    }
+  }
+}
+
+async function clearStatus(chatId: string): Promise<void> {
+  const existing = statusPins.get(chatId)
+  if (existing) {
+    unpinMessage(existing).catch(() => {})
+    statusPins.delete(chatId)
+  }
+}
+
+interface Step {
+  text: string
+  tools: CollapsedTool[]
+  cardId: string | null
+  patcher: PatchScheduler | null
+}
+
+function buildStepCard(step: Step, opts: { isFinal: boolean; startMs: number; totalTools: number; buttons: ActionButton[] }): object {
+  const elements: object[] = []
+
+  // Text content on top
+  if (step.text.trim()) {
+    let display = feishuMd(step.text).trim()
+    if (display.length > MAX_CARD_CONTENT) display = display.slice(0, MAX_CARD_CONTENT) + '\n\n*...(truncated)*'
+    elements.push({ tag: 'markdown', content: display })
+  }
+
+  // Collapsed tool panels below
+  if (step.tools.length > 0) {
+    if (step.text.trim()) elements.push({ tag: 'hr' })
+    for (const tool of step.tools) {
+      elements.push(buildCollapsiblePanel(tool))
+    }
+  }
+
+  if (elements.length === 0) {
+    elements.push({ tag: 'markdown', content: '*(done)*' })
+  }
+
+  // Final step gets buttons + footer
+  if (opts.isFinal) {
+    if (opts.buttons.length > 0) {
+      elements.push({ tag: 'hr' })
+      elements.push({
+        tag: 'action',
+        actions: opts.buttons.map(b => ({
+          tag: 'button',
+          text: { tag: 'plain_text', content: b.label },
+          type: b.type,
+          url: b.url,
+        })),
+      })
+    }
+    const s = Math.round((Date.now() - opts.startMs) / 1000)
+    const elapsed = s > 0 ? `${s}s` : ''
+    const toolNote = opts.totalTools > 0 ? `${opts.totalTools} tool${opts.totalTools !== 1 ? 's' : ''}` : ''
+    const footer = [toolNote, elapsed].filter(Boolean).join(' · ')
+    if (footer) {
+      elements.push({ tag: 'note', elements: [{ tag: 'plain_text', content: footer }] })
+    }
+  }
+
+  return { config: { wide_screen_mode: true }, elements }
+}
 
 export async function handleAgentResponse(
   messageId: string,
@@ -270,68 +342,35 @@ export async function handleAgentResponse(
 ): Promise<ReplyResult> {
   const startMs = Date.now()
   addReaction(messageId, EMOJI.received).catch(() => {})
+  updateStatus(chatId, 'thinking...').catch(() => {})
 
   let sessionId: string | undefined
   let hasError = false
-  let toolCount = 0
-  let activeBlock: TextBlock | null = null
-  let lastText = ''
+  let totalTools = 0
   let lastToolSpec: ToolSpec | null = null
-  let lastToolPatcher: PatchScheduler | null = null
 
-  // Start a new streaming text card.
-  const startTextBlock = (): TextBlock => {
-    const cardPromise = replyCard(messageId, textCard('*...*'))
-    const block: TextBlock = { text: '', patcher: null, cardPromise }
-    cardPromise.then(id => {
-      if (!id || block !== activeBlock) return
-      const p = new PatchScheduler()
-      p.bind(id)
-      block.patcher = p
-      p.push(textCard(block.text))
-    })
-    return block
-  }
+  // Step management
+  const flushedSteps: Step[] = []
+  let current: Step = { text: '', tools: [], cardId: null, patcher: null }
 
-  // Append a text delta to the active block, pushing a PATCH update.
-  const appendText = (delta: string) => {
-    if (!activeBlock) activeBlock = startTextBlock()
-    activeBlock.text += delta
-    activeBlock.patcher?.push(textCard(activeBlock.text))
-  }
-
-  // Finalize and close the active text block.
-  const flushTextBlock = async () => {
-    if (!activeBlock) return
-    const block = activeBlock
-    activeBlock = null
-    await block.cardPromise  // ensure card is created
-    if (block.patcher) {
-      lastText = block.text
-      const buttons = extractActionButtons(block.text)
-      if (buttons.length > 0) {
-        // Finalize text card with action buttons appended
-        const md = feishuMd(block.text).trim()
-        let display = md
-        if (display.length > MAX_CARD_CONTENT) display = display.slice(0, MAX_CARD_CONTENT) + '\n\n*...(truncated)*'
-        const elements: object[] = [{ tag: 'markdown', content: display || '*(done)*' }]
-        elements.push({ tag: 'hr' })
-        elements.push({
-          tag: 'action',
-          actions: buttons.map(b => ({
-            tag: 'button',
-            text: { tag: 'plain_text', content: b.label },
-            type: b.type,
-            url: b.url,
-          })),
-        })
-        await block.patcher.flush({ config: { wide_screen_mode: true }, elements })
-      } else {
-        let display = feishuMd(block.text).trim()
-        if (display.length > MAX_CARD_CONTENT) display = display.slice(0, MAX_CARD_CONTENT) + '\n\n*...(truncated)*'
-        await block.patcher.flush({ config: { wide_screen_mode: true }, elements: [{ tag: 'markdown', content: display || '*(done)*' }] })
-      }
+  const ensureStepCard = async () => {
+    if (current.cardId) return
+    current.cardId = await replyCard(messageId, textCard('*...*'))
+    if (current.cardId) {
+      current.patcher = new PatchScheduler()
+      current.patcher.bind(current.cardId)
     }
+  }
+
+  const flushStep = async () => {
+    if (!current.text.trim() && current.tools.length === 0) return
+    await ensureStepCard()
+    if (current.patcher) {
+      const card = buildStepCard(current, { isFinal: false, startMs, totalTools, buttons: [] })
+      await current.patcher.flush(card)
+    }
+    flushedSteps.push(current)
+    current = { text: '', tools: [], cardId: null, patcher: null }
   }
 
   try {
@@ -339,36 +378,39 @@ export async function handleAgentResponse(
       switch (chunk.type) {
 
         case 'text': {
-          appendText(chunk.content)
+          // New text after tools completed → new step
+          if (current.tools.length > 0) {
+            await flushStep()
+          }
+          current.text += chunk.content
+          await ensureStepCard()
+          current.patcher?.push(textCard(current.text))
           break
         }
 
         case 'tool_use': {
-          toolCount++
-          await flushTextBlock()
+          totalTools++
           const spec = parseToolUse(chunk.content)
           lastToolSpec = spec
-          lastToolPatcher = null
-          const toolCardId = await replyCard(messageId, toolCardContent(spec))
-          if (toolCardId) {
-            const p = new PatchScheduler()
-            p.bind(toolCardId)
-            lastToolPatcher = p
-          }
+          current.tools.push({ spec })
+          await ensureStepCard()
+          updateStatus(chatId, `running: ${spec.header}${spec.body ? ' ' + spec.body.slice(0, 30) : ''}...`).catch(() => {})
+          // Show working state on current card
+          const workingText = current.text || `*Working... (${current.tools.length} tool${current.tools.length !== 1 ? 's' : ''})*`
+          current.patcher?.push(textCard(workingText))
           break
         }
 
         case 'tool_result': {
-          if (lastToolPatcher && lastToolSpec && chunk.content) {
+          if (lastToolSpec && chunk.content) {
             const preview = buildResultPreview(
               chunk.content,
               chunk.lineCount ?? chunk.content.split('\n').length,
               lastToolSpec,
               chunk.isError ?? false,
             )
-            if (preview) {
-              lastToolPatcher.push(toolCardContent(lastToolSpec, preview))
-            }
+            const last = current.tools[current.tools.length - 1]
+            if (last && preview) last.result = preview
           }
           break
         }
@@ -380,25 +422,38 @@ export async function handleAgentResponse(
 
         case 'error': {
           hasError = true
-          await flushTextBlock()
           addReaction(messageId, EMOJI.error).catch(() => {})
-          await replyCard(messageId, errorCard(chunk.content))
+          clearStatus(chatId).catch(() => {})
+          if (current.patcher) {
+            await current.patcher.flush(errorCard(chunk.content))
+          } else {
+            await replyCard(messageId, errorCard(chunk.content))
+          }
           return { sessionId }
         }
       }
     }
   } catch (err) {
     hasError = true
-    await flushTextBlock()
     addReaction(messageId, EMOJI.error).catch(() => {})
-    await replyCard(messageId, errorCard(String(err)))
+    clearStatus(chatId).catch(() => {})
+    if (current.patcher) {
+      await current.patcher.flush(errorCard(String(err)))
+    } else {
+      await replyCard(messageId, errorCard(String(err)))
+    }
     return { sessionId }
   }
 
   if (!hasError) {
-    await flushTextBlock()
-    await replyCard(messageId, doneCard(toolCount, startMs))
+    await ensureStepCard()
+    const buttons = extractActionButtons(current.text)
+    const card = buildStepCard(current, { isFinal: true, startMs, totalTools, buttons })
+    if (current.patcher) {
+      await current.patcher.flush(card)
+    }
     addReaction(messageId, EMOJI.done).catch(() => {})
+    clearStatus(chatId).catch(() => {})
   }
 
   return { sessionId }

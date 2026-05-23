@@ -1,353 +1,311 @@
-# lark-channel
+# lark-claude-bridge
 
-Connect Feishu/Lark group chats to [Claude Code](https://claude.ai/code) agents. Each group is an isolated workspace: the agent has persistent session context, streams responses as real-time Feishu cards, and its working directory is a dedicated folder on disk.
+飞书/Lark <-> Claude Code Agent 协作桥接器。通过飞书群聊与 Claude Code Agent 交互，支持多 Agent、Session 管理、流式卡片输出、工具调用折叠等功能。
 
-```
-User: what are the recent open issues?
-       |
-       v  ~100ms
-[EYES reaction]       ← agent received
-       |
-       v
-[text card]           ← streaming, token by token
-  Let me check...
-       |
-       v
-[Bash card]           ← tool call
-  gh issue list --state open
-  ─────────────────────────────
-  #142 Fix streaming bug · 2h ago
-  #141 Add webhook support · 5h ago
-       |
-       v
-[text card]           ← streaming result
-  Found 10 open issues...
-       |
-       v
-[Done · 4s | 2 tool calls]   ← DONE reaction added
-```
+## 功能
 
----
+- **多 Agent 隔离** — 每个飞书群绑定一个独立 Agent，互不干扰
+- **Session 管理** — 查看/接管/新建 CLI session，支持 fork 和 resume
+- **流式卡片输出** — 实时流式更新飞书卡片，按步骤分段显示
+- **工具调用折叠** — Bash、Read、Edit 等工具调用默认折叠为 collapsible panel
+- **Status 置顶** — 工作时自动置顶状态消息（thinking / running...）
+- **CLI 共存** — 检测 CLI 占用，提供 watch/fork/kill 选项
+- **定时巡检** — 支持 cron 定时任务（日报、监控等）
+- **访问控制** — 支持 open/allowlist 模式
+- **macOS/Linux 自启动** — launchd / systemd 配置
 
-## The Mental Model
-
-**Group = terminal window.** Each Feishu group is a conversation workspace: one agent, one `cwd`, one persistent session. Asking a follow-up question in the same group picks up where the last message left off — the agent remembers.
-
-**Manager group = terminal manager.** One special group acts as your command center. Tell it what you want to work on; it creates a new group (workspace) with the right agent persona, dedicated folder, and config — then adds you. When you're done, tell it to close the workspace.
+## 架构
 
 ```
-Manager group
-├── "start a workspace to debug the payment service"
-│       → creates group "payment-debug"
-│       → creates ~/.lark-channel/workspaces/payment-debug/
-│       → writes agents/payment-debug.md (persona: backend debugging agent)
-│       → restarts bridge, adds you to group
-│
-├── "list my workspaces"
-│       → shows all active groups + their purposes
-│
-└── "close payment-debug"
-        → archives group, workspace folder stays on disk
+飞书 WebSocket (lark-cli event subscribe)
+  → Bridge (NDJSON parser)
+  → Router (chat_id → group config)
+  → Queue (per-group serial, cross-group parallel)
+  → Agent (Python SDK subprocess, session resume)
+  → Reply Engine (step-based streaming cards)
+  → lark-cli (send/reply/patch)
+  → 飞书群聊
 ```
 
-Each workspace group has one coding agent running against its folder. Everything the agent does — clones, files, scripts — lands in that folder.
+## 快速开始
 
----
+### 环境要求
 
-## Prerequisites
+| 依赖 | 版本 | 说明 |
+|------|------|------|
+| [Bun](https://bun.sh) | >= 1.0 | 运行时 |
+| Python | >= 3.10 | Agent worker |
+| Node.js | >= 18 | 安装 lark-cli |
+| Claude Code | latest | `claude` 命令可用 |
+| 飞书自建应用 | — | 需配置权限和事件 |
 
-- [Bun](https://bun.sh) >= 1.0
-- Python >= 3.10 (for `agent_worker.py`)
-- A Feishu bot app ([open.feishu.cn](https://open.feishu.cn))
-- Claude Code installed and authorized (`claude --version`)
-
----
-
-## Install
-
-### 1. Feishu CLI
+### 安装
 
 ```sh
-npm install -g @larksuite/cli
-```
-
-Create a Feishu app at [open.feishu.cn](https://open.feishu.cn), then configure:
-
-```sh
-lark-cli config init
-# enter: App ID, App Secret, region (feishu or lark)
-```
-
-Required app permissions: `im:message`, `im:message:send_as_bot`, `im:reaction`
-Required event subscription: `im.message.receive_v1`
-Add the bot to your target groups.
-
-### 2. Claude Agent SDK (Python)
-
-```sh
-pip install claude-agent-sdk
-```
-
-### 3. lark-channel
-
-```sh
-git clone https://github.com/shareAI-lab/lark-channel
-cd lark-channel
+git clone https://github.com/xjy0410/lark-claude-bridge.git
+cd lark-claude-bridge
 bun install
+pip3 install claude-agent-sdk
+npm install -g @anthropic-ai/lark-cli
 ```
 
-### 4. Configure
+### 配置飞书应用
+
+1. 在 [飞书开放平台](https://open.feishu.cn) 创建自建应用
+2. 添加**机器人**能力
+3. 配置权限（应用身份）：
+   - `im:message` — 获取与发送消息
+   - `im:message:send_as_bot` — 机器人发消息
+   - `im:message:patch` — 更新消息（流式必需）
+   - `im:reaction` — 表情回复
+   - `im:chat` — 群组管理
+4. 事件订阅 → **WebSocket 长连接模式**：
+   - `im.message.receive_v1`
+5. 将机器人加入目标群聊
+
+### 配置 lark-cli
+
+```sh
+echo "YOUR_APP_SECRET" | lark-cli config init \
+  --app-id cli_xxxxxxxxxx \
+  --app-secret-stdin \
+  --brand feishu
+```
+
+### 创建配置
 
 ```sh
 mkdir -p ~/.lark-channel/agents
-cp agents.example/_feishu_workspace.md ~/.lark-channel/agents/
-# create your first agent .md file (see Agent Files below)
+cp config.example.yaml config.yaml
 ```
 
-### 5. Start
+编辑 `config.yaml`：
+
+```yaml
+settings:
+  session_ttl: 7d
+  max_concurrent: 10
+  default_model: claude-opus-4-6
+  python: python3
+  agents_dir: ~/.lark-channel/agents
+
+access:
+  policy: open
+  allowed_senders: []
+```
+
+### 创建 Agent
+
+每个 Agent 是 `~/.lark-channel/agents/` 下的一个 `.md` 文件：
+
+```markdown
+---
+chat_id: oc_你的群聊ID
+name: assistant
+cwd: ~/workspace
+permission_mode: bypassPermissions
+---
+
+你是一个全能助手 Agent。用用户的语言回复，回复简洁。
+```
+
+### 启动
 
 ```sh
 bun start
 ```
 
----
+## Agent 配置字段
 
-## Ask Your Agent to Set This Up
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `chat_id` | 是 | 飞书群聊 ID（oc_xxx） |
+| `name` | 否 | Agent 名称（默认取文件名） |
+| `cwd` | 否 | 工作目录（支持 `~/`） |
+| `permission_mode` | 否 | `default` / `acceptEdits` / `bypassPermissions` |
+| `session_id` | 否 | 绑定已有 CLI session（用于接管） |
+| `is_manager` | 否 | 是否为 manager 群（启用管理命令） |
+| `schedule` | 否 | 定时任务列表 |
 
-If you prefer to let an AI guide the installation, copy this prompt to Claude Code:
-
-```
-Please help me install and configure lark-channel on this machine.
-
-Steps:
-1. Check that Bun (https://bun.sh) is installed; install if not.
-2. Install Feishu CLI: npm install -g @larksuite/cli
-3. Clone and install: git clone https://github.com/shareAI-lab/lark-channel && cd lark-channel && bun install
-4. Install Python SDK: pip install claude-agent-sdk
-5. Guide me to create a Feishu app at https://open.feishu.cn:
-   - App type: self-built (custom app)
-   - Permissions to enable: im:message, im:message:send_as_bot, im:reaction
-   - Event to subscribe: im.message.receive_v1
-   - Enable bot mode and add bot to at least one group
-6. Configure lark-cli: lark-cli config init  (enter App ID and App Secret)
-7. Create my first agent config at ~/.lark-channel/agents/
-8. Start: cd lark-channel && bun start
-
-After each step, show me what was done and confirm before continuing.
-```
-
----
-
-## Manager Group
-
-The manager agent creates and manages all other workspaces. Set it up once.
-
-**1. Create the manager group in Feishu** (or ask the manager agent to help you later):
-
-```sh
-lark-cli im +chat-create --name "lark-channel manager" --type private --set-bot-manager --as bot
-# note the chat_id returned
-```
-
-**2. Create `~/.lark-channel/agents/manager.md`**:
-
-```md
----
-chat_id: oc_YOUR_MANAGER_CHAT_ID
-name: manager
-cwd: ~/lark-channel
-permission_mode: bypassPermissions
----
-
-You are the lark-channel workspace manager. You create and manage isolated agent workspaces.
-
-Each workspace is:
-- A Feishu group where the user and agent interact
-- A folder at ~/.lark-channel/workspaces/{name}/ (the agent's cwd)
-- An agent config at ~/.lark-channel/agents/{name}.md
-
-When a user asks to create a workspace:
-1. Ask: what is the purpose / main task?
-2. Suggest a short slug name (lowercase, hyphens)
-3. Create the Feishu group:
-   lark-cli im +chat-create --name "{name}" --type private --set-bot-manager --as bot
-4. Add the user to the group:
-   lark-cli api POST /open-apis/im/v1/chats/{chat_id}/members --data '{"id_list":["USER_OPEN_ID"],"member_id_type":"open_id"}' --as bot
-5. Create the workspace folder:
-   mkdir -p ~/.lark-channel/workspaces/{name}
-6. Write ~/.lark-channel/agents/{name}.md with:
-   - chat_id from step 3
-   - cwd: ~/.lark-channel/workspaces/{name}
-   - permission_mode based on task sensitivity
-   - A persona tailored to the stated task (role, tools, personality, scope)
-7. Restart the bridge:
-   pkill -f "bun.*index.ts"; cd ~/lark-channel && bun run src/index.ts &
-
-When asked to list workspaces: read all files in ~/.lark-channel/agents/ (skip _prefix files).
-When asked to close a workspace: remove the agent .md file and restart the bridge.
-
-Reply concisely. Use the user's language.
-```
-
-**3. Restart** `bun start` — the manager group is now active.
-
----
-
-## Workspace Layout
-
-```
-~/.lark-channel/
-├── agents/
-│   ├── _feishu_workspace.md   # shared context appended to every agent
-│   ├── manager.md             # manager agent
-│   └── *.md                   # one per workspace (auto-created by manager)
-├── workspaces/
-│   ├── payment-debug/         # cwd for the payment-debug group
-│   ├── frontend-refactor/     # cwd for the frontend-refactor group
-│   └── ...                    # flat list, one folder per workspace
-├── sessions.json              # runtime: chat_id → session_id (auto-managed)
-└── access.json                # sender allowlist (if access.policy: allowlist)
-```
-
-Workspaces are portable: zip a folder and its `.md` file to move or share a workspace.
-
----
-
-## Agent Files
-
-Each `~/.lark-channel/agents/*.md` file defines one group's agent:
-
-```md
----
-chat_id: oc_84f7f942e8067a61dd61a434fc92ef6a
-name: learn-claude-code
-cwd: ~/repos/learn-claude-code
-permission_mode: default
-schedule:
-  - cron: "0 9 * * 1-5"
-    prompt: "Check stale PRs (>3 days), unanswered issues, failing CI. Post a digest."
----
-
-You are the maintainer agent for shareAI-lab/learn-claude-code.
-TypeScript educational repo (44k+ stars). Use gh CLI for GitHub operations.
-Reply in the user's language. Keep responses concise for mobile reading.
-```
-
-`permission_mode`: `default` | `acceptEdits` | `bypassPermissions`
-
-Files starting with `_` are shared context blocks appended to every agent's system prompt. The included `_feishu_workspace.md` teaches agents how to create Feishu docs, tables, and tasks.
-
----
-
-## Streaming Card Layout
-
-Each logical block in the agent response becomes a separate thread reply:
-
-| Block | Card style | Live updates |
-|-------|-----------|--------------|
-| Text segment | No header, markdown | PATCH per token |
-| Bash | Orange header + command | Output preview after run |
-| Read / Write / Edit | Blue header + filename | Line count |
-| Grep / Glob | Teal header + pattern | Match count |
-| WebSearch / WebFetch | Wathet header + query | Result summary |
-| Agent / Task | Purple header | First lines of result |
-| Done | Green · elapsed · tool count | — |
-| Error | Red header + message | — |
-
-Feishu card markdown is preprocessed automatically: `## headings` → `**bold**`, leading blank lines stripped.
-
----
-
-## Access Control
-
-**Open** (default): anyone in a configured group can message the agent.
-
-**Allowlist**: only approved `open_id`s.
-
-```yaml
-# config.yaml
-access:
-  policy: allowlist
-```
-
-To approve a user without editing config:
-
-```
-# Group owner sends:
-admin pair ABCDE
-
-# New user sends in the same group:
-pair ABCDE
-```
-
----
-
-## Scheduled Patrols
+### 定时任务
 
 ```yaml
 schedule:
   - cron: "0 9 * * 1-5"
-    prompt: "Check stale PRs (>3 days without review), unanswered issues, failing CI. Post a digest."
-  - cron: "0 18 * * 5"
-    prompt: "Weekly summary: what was merged? Any blockers for next week?"
+    prompt: "检查所有服务状态，汇总报告"
 ```
 
-Cron expressions use local timezone.
+### 共享能力块
 
----
-
-## Session Management
-
-Sessions persist across messages in the same group (agent remembers context). They expire after `session_ttl` (default 7 days) and reset automatically.
+以 `_` 开头的文件不会被当作 Agent，而是作为共享上下文注入所有 Agent 的 persona：
 
 ```sh
-cat ~/.lark-channel/sessions.json        # view active sessions
-echo '{}' > ~/.lark-channel/sessions.json  # reset all (fresh context)
+# ~/.lark-channel/agents/_feishu_workspace.md
+# 内容会追加到每个 Agent 的系统提示词中
 ```
 
----
+## 群聊命令
 
-## Architecture
+### Manager 群
+
+| 命令 | 说明 |
+|------|------|
+| `sessions` | 列出所有活跃 CLI session（含上下文摘要） |
+| `use <N>` | 查看 session N 详情 |
+| `takeover <N> <name>` | 接管 session，创建新群 `<name> [MacBook]` |
+| `new <name>` | 创建新工作空间 |
+| `help` | 显示命令列表 |
+
+### 工作群
+
+| 命令 | 说明 |
+|------|------|
+| `update` | 显示 CLI 端新活动 |
+| `watch` | 查看当前 session 状态 |
+| `fork` | Fork session，独立继续 |
+| `kill-cli` | 终止 CLI 进程，切换到飞书 |
+| `end` | 结束工作空间（需确认，解散群，保留上下文） |
+| `help` | 显示命令列表 |
+
+## 卡片输出逻辑
+
+每个回复按步骤分段，每步一张卡片：
 
 ```
-Feishu groups
-     |
-     v
-lark-channel (Bun process)
-  bridge.ts     ← lark-cli WebSocket event stream (NDJSON)
-     |
-  router.ts     ← chat_id → agent config (from ~/.lark-channel/agents/*.md)
-     |
-  queue.ts      ← serial per group, parallel across groups
-     |
-  agent.ts      ← Python subprocess per query
-     |
-  agent_worker.py  ← Claude Agent SDK (ClaudeSDKClient, StreamEvent, session resume)
-     |
-  reply.ts      ← multi-block streaming cards + PatchScheduler
-     |
-  lark.ts       ← lark-cli Go binary (reactions, cards, PATCH)
+┌─────────────────────────────────┐
+│ 我来看一下这个文件。             │  ← 步骤文字（流式更新）
+│─────────────────────────────────│
+│ ▶ Read server.ts         [折叠] │  ← collapsible_panel
+│ ▶ Bash `npm test`        [折叠] │  ← collapsible_panel
+└─────────────────────────────────┘
+┌─────────────────────────────────┐
+│ 测试通过了，已修复。             │  ← 最终步骤
+│─────────────────────────────────│
+│ ▶ Edit utils.ts          [折叠] │
+│                                 │
+│ 3 tools · 12s                   │  ← footer
+└─────────────────────────────────┘
 ```
 
-Current implementation uses a Python subprocess for the agent worker because the Python SDK has mature `resume` support for cross-message session persistence. The TypeScript SDK (`@anthropic-ai/claude-agent-sdk`) is the natural long-term path — it would allow in-process session management with no subprocess overhead.
+工作时自动置顶状态消息：`thinking...` → `running: Bash npm test...` → 完成后取消。
 
----
+## 系统自启动
 
-## Development
+### macOS (launchd)
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.lark-channel</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$HOME/.bun/bin/bun</string>
+    <string>run</string>
+    <string>src/index.ts</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>$HOME/lark-claude-bridge</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>$HOME/.lark-channel/lark-channel.log</string>
+  <key>StandardErrorPath</key>
+  <string>$HOME/.lark-channel/lark-channel.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>HOME</key>
+    <string>$HOME</string>
+  </dict>
+</dict>
+</plist>
+```
+
+保存到 `~/Library/LaunchAgents/com.lark-channel.plist`（替换 `$HOME` 为实际路径），然后：
 
 ```sh
-bun dev          # watch mode
-bun run check    # type check
+launchctl load ~/Library/LaunchAgents/com.lark-channel.plist
 ```
 
-Test the agent worker directly:
+### Linux (systemd)
+
+```ini
+[Unit]
+Description=Lark Claude Bridge
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/lark-claude-bridge
+ExecStart=%h/.bun/bin/bun run src/index.ts
+Restart=always
+RestartSec=5
+Environment=PATH=%h/.bun/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target
+```
+
+保存到 `~/.config/systemd/user/lark-channel.service`，然后：
 
 ```sh
-echo '{"message":"hello","persona":"You are helpful","cwd":"/tmp","permissionMode":"default"}' \
-  | python3 agent_worker.py
+systemctl --user daemon-reload
+systemctl --user enable --now lark-channel
 ```
 
----
+## 一键配置提示词
+
+在新机器上用 Claude Code 一键配置，复制以下提示词：
+
+```
+帮我在这台机器上安装和配置 lark-claude-bridge：
+
+1. 安装 Bun: curl -fsSL https://bun.sh/install | bash
+2. 克隆项目: git clone https://github.com/xjy0410/lark-claude-bridge.git && cd lark-claude-bridge && bun install
+3. 安装 Python SDK: pip3 install claude-agent-sdk
+4. 安装 lark-cli: npm install -g @anthropic-ai/lark-cli
+5. 配置 lark-cli（我会提供 App ID 和 Secret）
+6. 创建 ~/.lark-channel/agents/ 目录和配置文件
+7. 创建 config.yaml
+8. 配置系统自启动（macOS 用 launchd，Linux 用 systemd）
+9. 启动服务并验证
+
+每步完成后确认再继续。
+```
+
+## 项目结构
+
+```
+├── src/
+│   ├── index.ts        # 主入口 + 管理命令
+│   ├── agent.ts        # Agent SDK 子进程管理
+│   ├── reply.ts        # 步骤分段流式卡片引擎
+│   ├── router.ts       # 配置加载 + chat_id 路由
+│   ├── sessions.ts     # Session 持久化 + CLI 发现
+│   ├── bridge.ts       # 飞书 WebSocket 事件桥接
+│   ├── queue.ts        # 并发队列
+│   ├── access.ts       # 访问控制
+│   ├── patrol.ts       # 定时巡检
+│   └── lark.ts         # lark-cli 命令封装
+├── agent_worker.py     # Python Agent SDK worker
+├── config.example.yaml # 配置模板
+├── package.json
+└── tsconfig.json
+```
+
+## 开发
+
+```sh
+bun dev          # watch 模式
+bun run check    # 类型检查
+```
 
 ## License
 

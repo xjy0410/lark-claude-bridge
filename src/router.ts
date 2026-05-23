@@ -17,6 +17,8 @@ export interface GroupConfig {
   persona: string
   permissionMode: string
   schedule: ScheduleConfig[]
+  sessionId?: string
+  isManager?: boolean
 }
 
 export interface Settings {
@@ -103,6 +105,8 @@ function loadAgentFiles(agentsDir: string, workspaceBlock: string): GroupConfig[
         persona,
         permissionMode: (meta.permission_mode as string) ?? 'default',
         schedule,
+        sessionId: (meta.session_id as string) ?? undefined,
+        isManager: (meta.is_manager as boolean) ?? false,
       })
     } catch (err) {
       console.error(`[router] Failed to load agent file ${file}: ${err}`)
