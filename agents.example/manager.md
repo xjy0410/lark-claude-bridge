@@ -70,8 +70,8 @@ session_id: {完整的sessionId}
 EOF
 
 # 重启 bridge
-launchctl unload ~/Library/LaunchAgents/com.xu.lark-channel.plist
-launchctl load ~/Library/LaunchAgents/com.xu.lark-channel.plist
+pkill -f "bun.*index.ts"
+cd ~/lark-channel && nohup bun run src/index.ts > /dev/null 2>&1 &
 ```
 
 ### 新建 Session

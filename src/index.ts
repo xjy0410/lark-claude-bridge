@@ -224,7 +224,7 @@ async function main(): Promise<void> {
         `   permission_mode: bypassPermissions`,
         `   session_id: ${entry.sessionId}`,
         `   persona: 你正在继续一个已有的 Claude Code 会话。保持之前的上下文和工作风格。用用户的语言回复，回复简洁。`,
-        `4. Restart: launchctl unload ~/Library/LaunchAgents/com.xu.lark-channel.plist && launchctl load ~/Library/LaunchAgents/com.xu.lark-channel.plist`,
+        `4. Restart: pkill -f "bun.*index.ts" && cd ~/lark-channel && nohup bun run src/index.ts > /dev/null 2>&1 &`,
         `5. Confirm to user that workspace "${displayName}" is ready.`,
       ].join('\n')
       getQueue(event.chat_id).enqueue(async () => {
@@ -303,7 +303,7 @@ async function main(): Promise<void> {
         `   permission_mode: bypassPermissions`,
         `   session_id: ${s.sessionId}`,
         `   persona: 你正在继续一个已有的 Claude Code 会话。保持之前的上下文和工作风格。用用户的语言回复，回复简洁。`,
-        `4. Restart: launchctl unload ~/Library/LaunchAgents/com.xu.lark-channel.plist && launchctl load ~/Library/LaunchAgents/com.xu.lark-channel.plist`,
+        `4. Restart: pkill -f "bun.*index.ts" && cd ~/lark-channel && nohup bun run src/index.ts > /dev/null 2>&1 &`,
         `5. Confirm to user that workspace "${displayName}" is ready.`,
       ].join('\n')
       // Pass to manager agent to execute
@@ -345,7 +345,7 @@ async function main(): Promise<void> {
         `   cwd: ~/.lark-channel/workspaces/${slug}`,
         `   permission_mode: bypassPermissions`,
         `   persona: 你是一个全能助手 Agent。用用户的语言回复，回复简洁。`,
-        `5. Restart: launchctl unload ~/Library/LaunchAgents/com.xu.lark-channel.plist && launchctl load ~/Library/LaunchAgents/com.xu.lark-channel.plist`,
+        `5. Restart: pkill -f "bun.*index.ts" && cd ~/lark-channel && nohup bun run src/index.ts > /dev/null 2>&1 &`,
         `6. Confirm to user that workspace "${displayName}" is ready.`,
       ].join('\n')
       getQueue(event.chat_id).enqueue(async () => {
