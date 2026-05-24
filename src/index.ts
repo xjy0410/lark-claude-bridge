@@ -18,7 +18,7 @@ import { getQueue } from './queue.js'
 import { queryAgent, setPythonPath } from './agent.js'
 import { handleAgentResponse } from './reply.js'
 import { initAccess, isSenderAllowed, handleUnauthorized, resolvePairingCode, addSender, setAccessPolicy, getAllowed } from './access.js'
-import { initSessions, getSessionId, setSessionId, listCliSessions, getRecentHistory, getSessionContextSize, getLastHistoryTime, getHistorySince, getAllSessions, isSessionBusy } from './sessions.js'
+import { initSessions, getSessionId, setSessionId, listCliSessions, getRecentHistory, getSessionContextSize, getLastHistoryTime, getHistorySince, getAllSessions, isSessionBusy, clearSession } from './sessions.js'
 import { startPatrol, stopPatrol } from './patrol.js'
 import { initHeartbeat, stopHeartbeat } from './heartbeat.js'
 import { sendText, sendCard, dissolveChat } from './lark.js'
@@ -61,39 +61,52 @@ async function main(): Promise<void> {
 
   // 3. Admin command handler (messages starting with special prefixes)
   function handleAdminCommand(event: LarkEvent, group: GroupConfig): boolean {
-    const text = event.content.trim().toLowerCase()
+    // Strip @mention from content (compact mode appends "@BotName" to text)
+    const text = event.content.replace(/@\S+/g, '').trim().toLowerCase()
 
     // "sessions" quick command — only in manager group
     if (text === 'sessions' && group.isManager) {
       const cliSessions = listCliSessions()
       const feishuSessions = getAllSessions()
-      const feishuSessionIds = new Set(Object.values(feishuSessions).map(s => s.sessionId))
+      // Exclude manager group's own session
+      const managerSessionId = feishuSessions[group.chatId]?.sessionId
+      const feishuFiltered = Object.fromEntries(
+        Object.entries(feishuSessions).filter(([chatId]) => chatId !== group.chatId)
+      )
+      const feishuSessionIds = new Set(Object.values(feishuFiltered).map(s => s.sessionId))
       const cliSessionIds = new Set(cliSessions.map(s => s.sessionId))
 
       const lines: string[] = [`**Sessions [${tn}]:**\n`]
 
-      // CLI-only sessions
-      const cliOnly = cliSessions.filter(s => !feishuSessionIds.has(s.sessionId))
-      // Shared sessions (in both CLI and Feishu)
+      const cliOnly = cliSessions.filter(s => !feishuSessionIds.has(s.sessionId) && s.sessionId !== managerSessionId)
       const shared = cliSessions.filter(s => feishuSessionIds.has(s.sessionId))
-      // Feishu-only sessions
-      const feishuOnly = Object.entries(feishuSessions).filter(([_, s]) => !cliSessionIds.has(s.sessionId))
+      const feishuOnly = Object.entries(feishuFiltered).filter(([_, s]) => !cliSessionIds.has(s.sessionId))
 
       let idx = 1
+
+      const renderCliSession = (s: ReturnType<typeof listCliSessions>[0], extra?: string) => {
+        const name = s.name ? ` "${s.name}"` : ''
+        const status = s.status ?? 'idle'
+        const id = s.sessionId.slice(0, 8)
+        const size = getSessionContextSize(s.sessionId)
+        const lastTs = getLastHistoryTime(s.sessionId)
+        const timeAgo = lastTs ? formatTimeAgo(lastTs) : '?'
+        lines.push(`**${idx}.** [${status}] \`${id}\`${name}  (${size}, ${timeAgo})`)
+        lines.push(`  cwd: ${s.cwd}${extra ? '  ' + extra : ''}`)
+        const history = getRecentHistory(s.sessionId, 2)
+        for (const h of history) {
+          const display = h.display.length > 60 ? h.display.slice(0, 60) + '...' : h.display
+          lines.push(`  > ${display}`)
+        }
+        idx++
+      }
+
       if (shared.length > 0) {
         lines.push('**Shared (CLI + Feishu):**')
         for (const s of shared) {
-          const name = s.name ? ` "${s.name}"` : ''
-          const status = s.status ? `[${s.status}]` : ''
-          const id = s.sessionId.slice(0, 8)
-          const size = getSessionContextSize(s.sessionId)
-          const lastTs = getLastHistoryTime(s.sessionId)
-          const timeAgo = lastTs ? formatTimeAgo(lastTs) : '?'
-          const chatId = Object.entries(feishuSessions).find(([_, v]) => v.sessionId === s.sessionId)?.[0]
+          const chatId = Object.entries(feishuFiltered).find(([_, v]) => v.sessionId === s.sessionId)?.[0]
           const groupName = chatId ? routeChat(chatId)?.name ?? '' : ''
-          lines.push(`**${idx}.** ${status} \`${id}\`${name}  (${size}, ${timeAgo})`)
-          lines.push(`  cwd: ${s.cwd}${groupName ? `  group: ${groupName}` : ''}`)
-          idx++
+          renderCliSession(s, groupName ? `group: ${groupName}` : '')
         }
         lines.push('')
       }
@@ -101,15 +114,7 @@ async function main(): Promise<void> {
       if (cliOnly.length > 0) {
         lines.push('**CLI only:**')
         for (const s of cliOnly) {
-          const name = s.name ? ` "${s.name}"` : ''
-          const status = s.status ? `[${s.status}]` : ''
-          const id = s.sessionId.slice(0, 8)
-          const size = getSessionContextSize(s.sessionId)
-          const lastTs = getLastHistoryTime(s.sessionId)
-          const timeAgo = lastTs ? formatTimeAgo(lastTs) : '?'
-          lines.push(`**${idx}.** ${status} \`${id}\`${name}  (${size}, ${timeAgo})`)
-          lines.push(`  cwd: ${s.cwd}`)
-          idx++
+          renderCliSession(s)
         }
         lines.push('')
       }
@@ -119,10 +124,17 @@ async function main(): Promise<void> {
         for (const [chatId, s] of feishuOnly) {
           const id = s.sessionId.slice(0, 8)
           const size = getSessionContextSize(s.sessionId)
-          const groupName = routeChat(chatId)?.name ?? chatId.slice(0, 12)
+          const groupCfg = routeChat(chatId)
+          const groupName = groupCfg?.name ?? chatId.slice(0, 12)
           const timeAgo = formatTimeAgo(new Date(s.lastActive).getTime())
-          lines.push(`**${idx}.** \`${id}\`  (${size}, ${timeAgo})`)
+          const hasGroup = !!groupCfg
+          lines.push(`**${idx}.** [feishu${hasGroup ? '' : ' · no group'}] \`${id}\`  (${size}, ${timeAgo})`)
           lines.push(`  group: ${groupName}`)
+          const history = getRecentHistory(s.sessionId, 2)
+          for (const h of history) {
+            const display = h.display.length > 60 ? h.display.slice(0, 60) + '...' : h.display
+            lines.push(`  > ${display}`)
+          }
           idx++
         }
         lines.push('')
@@ -131,7 +143,7 @@ async function main(): Promise<void> {
       if (idx === 1) lines.push('*(none active)*\n')
 
       lines.push('---')
-      lines.push('`use <N>` 接管  |  `new` 新建  |  `help` 命令列表')
+      lines.push('`use <N>` 接管  |  `end <N>` 终结飞书端  |  `resume <N>` 恢复群聊  |  `new` 新建')
       const card = {
         config: { wide_screen_mode: true },
         elements: [{ tag: 'markdown', content: lines.join('\n') }],
@@ -142,6 +154,99 @@ async function main(): Promise<void> {
 
     // "use <N>" command — show session info and prompt for takeover
     const useMatch = text.match(/^use\s+(?:session\s+)?(\d+)$/)
+
+    // Helper: build indexed session list matching `sessions` output order
+    const buildSessionList = () => {
+      const cliSessions = listCliSessions()
+      const allFeishu = getAllSessions()
+      const managerSid = allFeishu[group.chatId]?.sessionId
+      const feishuSessions = Object.fromEntries(
+        Object.entries(allFeishu).filter(([chatId]) => chatId !== group.chatId)
+      )
+      const feishuSessionIds = new Set(Object.values(feishuSessions).map(s => s.sessionId))
+      const cliSessionIds = new Set(cliSessions.map(s => s.sessionId))
+      const shared = cliSessions.filter(s => feishuSessionIds.has(s.sessionId))
+      const cliOnly = cliSessions.filter(s => !feishuSessionIds.has(s.sessionId) && s.sessionId !== managerSid)
+      const feishuOnly = Object.entries(feishuSessions).filter(([_, s]) => !cliSessionIds.has(s.sessionId))
+      type Entry = { sessionId: string; chatId?: string; type: 'shared' | 'cli' | 'feishu'; cwd?: string }
+      const list: Entry[] = []
+      for (const s of shared) {
+        const chatId = Object.entries(feishuSessions).find(([_, v]) => v.sessionId === s.sessionId)?.[0]
+        list.push({ sessionId: s.sessionId, chatId, type: 'shared', cwd: s.cwd })
+      }
+      for (const s of cliOnly) list.push({ sessionId: s.sessionId, type: 'cli', cwd: s.cwd })
+      for (const [chatId, s] of feishuOnly) list.push({ sessionId: s.sessionId, chatId, type: 'feishu' })
+      return list
+    }
+
+    // "end <N>" command — terminate Feishu-side session (shared or feishu-only)
+    const endMatch = text.match(/^end\s+(\d+)$/)
+    if (endMatch && group.isManager) {
+      const idx = parseInt(endMatch[1], 10) - 1
+      const list = buildSessionList()
+      if (idx < 0 || idx >= list.length) {
+        sendText(event.chat_id, `Invalid index. Use \`sessions\` to see list.`)
+        return true
+      }
+      const entry = list[idx]
+      if (entry.type === 'cli') {
+        sendText(event.chat_id, `Session ${idx + 1} is CLI-only. Use \`end\` in the terminal or \`takeover\` first.`)
+        return true
+      }
+      if (entry.chatId) {
+        clearSession(entry.chatId)
+      }
+      sendText(event.chat_id, `Feishu session \`${entry.sessionId.slice(0, 8)}\` ended. Context preserved.`)
+      return true
+    }
+
+    // "resume <N>" command — recreate group for a Feishu-only session without active group
+    const resumeMatch = text.match(/^resume\s+(\d+)(?:\s+(.+))?$/)
+    if (resumeMatch && group.isManager) {
+      const idx = parseInt(resumeMatch[1], 10) - 1
+      const list = buildSessionList()
+      if (idx < 0 || idx >= list.length) {
+        sendText(event.chat_id, `Invalid index. Use \`sessions\` to see list.`)
+        return true
+      }
+      const entry = list[idx]
+      const groupName = resumeMatch[2]?.trim() || `resumed-${entry.sessionId.slice(0, 8)}`
+      const displayName = `${groupName} [${tn}]`
+      const slug = groupName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+      const instructions = [
+        `Resume session \`${entry.sessionId}\` into a new workspace "${displayName}":`,
+        `1. Create group: lark-cli im +chat-create --name "${displayName}" --type private --set-bot-manager --as bot`,
+        `2. Add user: lark-cli api POST /open-apis/im/v1/chats/{chat_id}/members --data '{"id_list":["${event.sender_id}"],"member_id_type":"open_id"}' --as bot`,
+        `3. Write config to ~/.lark-channel/agents/${slug}.md with:`,
+        `   chat_id: {new chat_id}`,
+        `   name: ${slug}`,
+        `   cwd: ${entry.cwd ?? '~'}`,
+        `   permission_mode: bypassPermissions`,
+        `   session_id: ${entry.sessionId}`,
+        `   persona: 你正在继续一个已有的 Claude Code 会话。保持之前的上下文和工作风格。用用户的语言回复，回复简洁。`,
+        `4. Restart: launchctl unload ~/Library/LaunchAgents/com.xu.lark-channel.plist && launchctl load ~/Library/LaunchAgents/com.xu.lark-channel.plist`,
+        `5. Confirm to user that workspace "${displayName}" is ready.`,
+      ].join('\n')
+      getQueue(event.chat_id).enqueue(async () => {
+        try {
+          const sessionId = getSessionId(event.chat_id) ?? group.sessionId
+          const chunks = queryAgent({
+            message: instructions,
+            sessionId,
+            persona: group.persona,
+            cwd: group.cwd,
+            permissionMode: group.permissionMode,
+            model: config.settings.defaultModel,
+          })
+          const result = await handleAgentResponse(event.message_id, event.chat_id, chunks, tn)
+          if (result.sessionId) setSessionId(event.chat_id, result.sessionId)
+        } catch (err) {
+          log(`Error in resume: ${err}`)
+        }
+      })
+      return true
+    }
+
     if (useMatch && group.isManager) {
       const idx = parseInt(useMatch[1], 10) - 1
       const cliSessions = listCliSessions()
@@ -445,6 +550,7 @@ async function main(): Promise<void> {
           try { process.kill(state.pid, 'SIGTERM') } catch {}
         }
       }
+      clearSession(event.chat_id)
       sendText(event.chat_id, 'Workspace ended. Context preserved. Dissolving group...')
       setTimeout(() => { dissolveChat(event.chat_id).catch(() => {}) }, 2000)
       return true
@@ -516,8 +622,9 @@ async function main(): Promise<void> {
           }
 
           // If forking, pass fork flag to agent
+          const message = event.content.replace(/@\S+/g, '').trim()
           const chunks = queryAgent({
-            message: event.content,
+            message,
             sessionId: forkSession ? sessionId : sessionId,
             persona: group.persona,
             cwd: group.cwd,
